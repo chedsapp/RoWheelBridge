@@ -35,28 +35,21 @@ class Program
     
     static async Task InitializeAsync()
     {
-        // Initialize DirectInput
         _inputManager = new DirectInputManager();
         
-        // Initialize ViGEm (Xbox controller emulation)
         _vigemClient = new ViGEmClient();
         _controller = _vigemClient.CreateXbox360Controller();
         _controller.AutoSubmitReport = false;
         
-        // Set up force feedback callback
         _controller.FeedbackReceived += OnFeedbackReceived;
         
-        // Connect controller
         _controller.Connect();
         Console.WriteLine("Virtual Xbox controller connected");
         
-        // Load or create calibration
         _calibration = WheelCalibration.LoadFromFile("calibration.json");
         
-        // Select and connect to wheel
         await SelectWheelAsync();
         
-        // Run calibration if needed
         if (NeedsCalibration())
         {
             await RunCalibrationAsync();
@@ -86,7 +79,7 @@ class Program
             Console.Write("Select device (1-" + devices.Count + "): ");
             string? input = Console.ReadLine();
             
-            // Safer parsing with better error handling
+            // I've never written a program meant for full production use so im being super anal about error handling
             if (string.IsNullOrEmpty(input))
             {
                 throw new Exception("No input provided");
@@ -105,7 +98,6 @@ class Program
             var selectedDevice = devices[choice - 1];
             Console.WriteLine($"Connecting to: {selectedDevice.ProductName}...");
             
-            // Add a small delay to ensure UI updates before potentially intensive operations
             Thread.Sleep(500);
             
             if (_inputManager.ConnectToWheel(selectedDevice.InstanceGuid))
@@ -438,10 +430,8 @@ class Program
             _controller.SetButtonState(Xbox360Button.X, wheelState.Buttons[_calibration.ShiftDownButton]);
         }
         
-        // Submit the report
         _controller.SubmitReport();
         
-        // Display current values (optional debug info)
         if (DateTime.Now.Millisecond % 20 < 16) // Update display every ~20ms
         {
             Console.SetCursorPosition(0, Console.CursorTop);

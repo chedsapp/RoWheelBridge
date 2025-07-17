@@ -34,15 +34,10 @@ public class DirectInputManager : IDisposable
         {
             Console.WriteLine("Connecting to steering wheel...");
             
-            // Clean up any existing resources
             CleanupResources();
             
-            // Create the joystick device
             _wheel = new Joystick(_directInput, deviceGuid);
             Console.WriteLine($"Device: {_wheel.Information.ProductName}");
-            
-            // Set the data format to "simple joystick" - required for proper operation
-            // Note: SharpDX handles this automatically, so we skip this step
             
             // Check capabilities
             var capabilities = _wheel.Capabilities;
@@ -51,7 +46,6 @@ public class DirectInputManager : IDisposable
             
             if (hasForceFeedback)
             {
-                // Get console window handle - this is critical for force feedback
                 var consoleWindow = GetConsoleWindow();
                 if (consoleWindow == IntPtr.Zero)
                 {
@@ -59,7 +53,7 @@ public class DirectInputManager : IDisposable
                     consoleWindow = IntPtr.Zero; // Use desktop window
                 }
                 
-                // Set cooperative level - EXCLUSIVE + FOREGROUND is required for force feedback
+                // Set cooperative level
                 try
                 {
                     _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.Exclusive | CooperativeLevel.Foreground);
@@ -80,7 +74,7 @@ public class DirectInputManager : IDisposable
                     }
                 }
                 
-                // Disable auto-centering spring - critical for force feedback
+                // Disable auto-centering spring
                 try
                 {
                     _wheel.Properties.AutoCenter = false;
@@ -99,11 +93,9 @@ public class DirectInputManager : IDisposable
                 Console.WriteLine("Set non-exclusive access for input-only device");
             }
             
-            // Acquire the device
             _wheel.Acquire();
             Console.WriteLine("Device acquired successfully");
             
-            // Initialize force feedback if supported
             if (hasForceFeedback)
             {
                 _forceFeedbackEnabled = InitializeForceFeedback();
@@ -136,9 +128,7 @@ public class DirectInputManager : IDisposable
         {
             Console.WriteLine("Initializing force feedback...");
             
-            // Count force feedback axes (simplified approach)
-            // Most steering wheels have 1-2 force feedback axes
-            _numForceFeedbackAxes = 1; // Start with 1 axis (X-axis for steering)
+            _numForceFeedbackAxes = 1;
             
             Console.WriteLine($"Found {_numForceFeedbackAxes} force feedback axes");
             
@@ -215,14 +205,11 @@ public class DirectInputManager : IDisposable
         
         try
         {
-            // Convert Xbox controller vibration to DirectInput force
             var xForce = (rightMotor - leftMotor) * 10000; // DI_FFNOMINALMAX
             var yForce = 0; // We only use X-axis for steering wheels
             
-            // Clamp
             xForce = Math.Max(-10000, Math.Min(10000, xForce));
             
-            // Create new effect parameters (following C++ SetDeviceForcesXY pattern)
             var effectParams = new EffectParameters
             {
                 Flags = EffectFlags.Cartesian | EffectFlags.ObjectOffsets,
