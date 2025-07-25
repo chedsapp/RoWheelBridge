@@ -1,0 +1,54 @@
+name: Build and Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+      
+    - name: Test
+      run: dotnet test --configuration Release --no-build --verbosity normal
+      
+    - name: Publish Windows x64
+      run: dotnet publish src/RoWheelBridge.csproj --configuration Release --runtime win-x64 --self-contained true --output ./publish/win-x64
+      
+    - name: Create release archive
+      run: |
+        cd publish/win-x64
+        7z a ../../RoWheelBridge-win-x64.zip *
+      
+    - name: Upload release asset
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./RoWheelBridge-win-x64.zip
+        asset_name: RoWheelBridge-win-x64.zip
+        asset_content_type: application/zip
+        
+    - name: Upload build artifacts
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: RoWheelBridge-win-x64
+        path: ./publish/win-x64/
