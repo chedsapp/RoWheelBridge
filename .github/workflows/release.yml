@@ -27,10 +27,12 @@ jobs:
     
     - name: Restore dependencies
       run: dotnet restore
+      working-directory: src
     
     - name: Build and publish
       run: |
-        dotnet publish -c Release -r ${{ matrix.os }} --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish/${{ matrix.os }}
+        dotnet publish -c Release -r ${{ matrix.os }} --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ../publish/${{ matrix.os }}
+      working-directory: src
     
     - name: Create archive
       run: |
