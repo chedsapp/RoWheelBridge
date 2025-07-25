@@ -1,16 +1,13 @@
-# PowerShell script to build releases locally for testing
 param(
     [string]$Runtime = "win-x64"
 )
 
 Write-Host "Building RoWheelBridge for $Runtime..." -ForegroundColor Green
 
-# Clean previous builds
 if (Test-Path "publish") {
     Remove-Item -Recurse -Force "publish"
 }
 
-# Build the application
 dotnet publish -c Release -r $Runtime --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o "./publish/$Runtime"
 
 if ($LASTEXITCODE -eq 0) {
