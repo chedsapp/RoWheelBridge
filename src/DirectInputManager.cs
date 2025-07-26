@@ -45,69 +45,93 @@ public class DirectInputManager : IDisposable
             bool hasForceFeedback = capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback);
             Console.WriteLine($"Force Feedback Support: {(hasForceFeedback ? "Yes" : "No")}");
             
+            var consoleWindow = GetConsoleWindow();
+            if (consoleWindow == IntPtr.Zero)
+            {
+                Console.WriteLine("Warning: Could not get console window handle, using desktop window");
+                consoleWindow = IntPtr.Zero; // Use desktop window
+            }
+            
+            bool exclusiveAccessGranted = false;
+            
             if (hasForceFeedback)
             {
-                var consoleWindow = GetConsoleWindow();
-                if (consoleWindow == IntPtr.Zero)
-                {
-                    Console.WriteLine("Warning: Could not get console window handle");
-                    consoleWindow = IntPtr.Zero; // Use desktop window
-                }
+                // Try to get exclusive access for force feedback
+                Console.WriteLine("Attempting to get exclusive access for force feedback...");
                 
-                // Set cooperative level
                 try
                 {
                     _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.Exclusive | CooperativeLevel.Foreground);
-                    Console.WriteLine("Set exclusive foreground access");
+                    Console.WriteLine("Exclusive foreground access granted");
+                    exclusiveAccessGranted = true;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Failed to set exclusive foreground: {ex.Message}");
+                    Console.WriteLine($"Failed exclusive foreground: {ex.Message}");
                     try
                     {
                         _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.Exclusive | CooperativeLevel.Background);
-                        Console.WriteLine("Set exclusive background access");
+                        Console.WriteLine("Exclusive background access granted");
+                        exclusiveAccessGranted = true;
                     }
                     catch (Exception ex2)
                     {
-                        Console.WriteLine($"Failed to set exclusive access: {ex2.Message}");
-                        return false; // Force feedback requires exclusive access
+                        Console.WriteLine($"Failed exclusive background: {ex2.Message}");
+                        Console.WriteLine("   Could not get exclusive access - force feedback will be disabled");
+                        Console.WriteLine("   To enable force feedback, try running as administrator");
+                        
+                        try
+                        {
+                            _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+                            Console.WriteLine("Non-exclusive access granted (input only)");
+                        }
+                        catch (Exception ex3)
+                        {
+                            Console.WriteLine($"Failed to set any cooperative level: {ex3.Message}");
+                            return false;
+                        }
                     }
                 }
                 
-                // Disable auto-centering spring
-                try
+                // Only try to disable auto-centering if we have exclusive access
+                if (exclusiveAccessGranted)
                 {
-                    _wheel.Properties.AutoCenter = false;
-                    Console.WriteLine("Disabled auto-centering");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Warning: Could not disable auto-centering: {ex.Message}");
+                    try
+                    {
+                        _wheel.Properties.AutoCenter = false;
+                        Console.WriteLine("Auto-centering disabled");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not disable auto-centering: {ex.Message}");
+                    }
                 }
             }
             else
             {
                 // For non-force feedback devices, non-exclusive is fine
-                var consoleWindow = GetConsoleWindow();
                 _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
-                Console.WriteLine("Set non-exclusive access for input-only device");
+                Console.WriteLine("Non-exclusive access set for input-only device");
             }
             
             _wheel.Acquire();
             Console.WriteLine("Device acquired successfully");
             
-            if (hasForceFeedback)
+            if (hasForceFeedback && exclusiveAccessGranted)
             {
                 _forceFeedbackEnabled = InitializeForceFeedback();
                 if (_forceFeedbackEnabled)
                 {
-                    Console.WriteLine("✓ Force feedback initialized successfully!");
+                    Console.WriteLine("Force feedback initialized successfully!");
                 }
                 else
                 {
-                    Console.WriteLine("✗ Force feedback initialization failed");
+                    Console.WriteLine("Force feedback initialization failed");
                 }
+            }
+            else if (hasForceFeedback && !exclusiveAccessGranted)
+            {
+                Console.WriteLine("Force feedback skipped - exclusive access required");
             }
             
             Console.WriteLine($"Connection successful - Force feedback: {(_forceFeedbackEnabled ? "ENABLED" : "DISABLED")}");
