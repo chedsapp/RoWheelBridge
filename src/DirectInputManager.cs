@@ -24,8 +24,7 @@ public class DirectInputManager : IDisposable
     {
         return _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
             .Where(device => device.Type != DeviceType.Mouse && 
-                           device.Type != DeviceType.Keyboard &&
-                           device.Type != DeviceType.Unknown)
+                           device.Type != DeviceType.Keyboard)
             .ToList();
     }
     
