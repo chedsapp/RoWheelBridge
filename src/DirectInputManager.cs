@@ -22,9 +22,10 @@ public class DirectInputManager : IDisposable
     
     public List<DeviceInstance> GetWheelDevices()
     {
-        return _directInput.GetDevices(DeviceType.Driving, DeviceEnumerationFlags.AllDevices)
-            .Concat(_directInput.GetDevices(DeviceType.Joystick, DeviceEnumerationFlags.AllDevices))
-            .Where(device => device.Type != DeviceType.Mouse && device.Type != DeviceType.Keyboard)
+        return _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
+            .Where(device => device.Type != DeviceType.Mouse && 
+                           device.Type != DeviceType.Keyboard &&
+                           device.Type != DeviceType.Unknown)
             .ToList();
     }
     
