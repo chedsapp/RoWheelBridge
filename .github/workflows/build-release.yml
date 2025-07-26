@@ -2,15 +2,9 @@ name: Build and Release
 
 on:
   release:
-    types: [published, created]
+    types: [published]
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
-permissions:
-  contents: write
-  
 jobs:
   build:
     runs-on: windows-latest
@@ -43,10 +37,14 @@ jobs:
       
     - name: Upload release asset
       if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v1
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: ./RoWheelBridge-win-x64.zip
-        token: ${{ secrets.GITHUB_TOKEN }}
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./RoWheelBridge-win-x64.zip
+        asset_name: RoWheelBridge-win-x64.zip
+        asset_content_type: application/zip
         
     - name: Upload build artifacts
       if: github.event_name == 'workflow_dispatch'
