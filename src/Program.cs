@@ -3,14 +3,27 @@ using Nefarius.ViGEm.Client;
 using Nefarius.ViGEm.Client.Targets;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
 using SharpDX.DirectInput;
+using System.Runtime.InteropServices;
 
 class Program
 {
+    public delegate bool ConsoleCtrlDelegate(int dwCtrlType);
+    
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate HandlerRoutine, bool Add);
+    
+    private const int CTRL_C_EVENT = 0;
+    private const int CTRL_BREAK_EVENT = 1;
+    private const int CTRL_CLOSE_EVENT = 2;
+    private const int CTRL_LOGOFF_EVENT = 5;
+    private const int CTRL_SHUTDOWN_EVENT = 6;
+    
     private static DirectInputManager? _inputManager;
     private static ViGEmClient? _vigemClient;
     private static IXbox360Controller? _controller;
     private static WheelCalibration _calibration = new();
     private static bool _running = true;
+    private static ConsoleCtrlDelegate _consoleHandler = new ConsoleCtrlDelegate(ConsoleCtrlCheck);
     
     static async Task Main(string[] args)
     {
@@ -35,6 +48,9 @@ class Program
     
     static async Task InitializeAsync()
     {
+        // Console control handler to catch window close events
+        SetConsoleCtrlHandler(_consoleHandler, true);
+        
         _inputManager = new DirectInputManager();
         
         _vigemClient = new ViGEmClient();
@@ -55,7 +71,7 @@ class Program
             await RunCalibrationAsync();
         }
         
-        Console.WriteLine("Setup complete! Press ESC to exit.");
+        Console.WriteLine("Setup complete! Press ESC to exit or close window.");
         Console.WriteLine();
     }
     
@@ -460,6 +476,24 @@ class Program
         var rightMotor = e.LargeMotor / 255.0f; // Normalize to 0.0-1.0
         
         _inputManager?.SetForceFeedback(leftMotor, rightMotor);
+    }
+    
+    static bool ConsoleCtrlCheck(int ctrlType)
+    {
+        // Handle console control events (window close, Ctrl+C, etc.)
+        switch (ctrlType)
+        {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+            case CTRL_CLOSE_EVENT:
+            case CTRL_LOGOFF_EVENT:
+            case CTRL_SHUTDOWN_EVENT:
+                Console.WriteLine("\nReceived close signal, cleaning up...");
+                _running = false;
+                Cleanup();
+                return true; // Indicate we handled the event
+        }
+        return false;
     }
     
     static void Cleanup()
