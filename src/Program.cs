@@ -86,52 +86,84 @@ class Program
     {
         try
         {
-            var devices = _inputManager!.GetWheelDevices(_debugMode);
+            var allDevices = _inputManager!.GetAllInputDevices(_debugMode);
             
-            if (!devices.Any())
+            if (!allDevices.Any())
             {
-                throw new Exception("No steering wheel devices found!");
+                throw new Exception("No input devices found!");
             }
             
-            Console.WriteLine("Available steering wheel devices:");
-            for (int i = 0; i < devices.Count; i++)
+            Console.WriteLine("\n=== DEVICE SETUP ===");
+            Console.WriteLine("You can use the same device for multiple inputs, or separate devices.");
+            Console.WriteLine("Available devices:");
+            
+            for (int i = 0; i < allDevices.Count; i++)
             {
-                var deviceInfo = GetDeviceInfo(devices[i]);
-                Console.WriteLine($"{i + 1}. {devices[i].ProductName} {deviceInfo}");
+                var deviceInfo = GetDeviceInfo(allDevices[i]);
+                Console.WriteLine($"{i + 1}. {allDevices[i].ProductName} {deviceInfo}");
             }
             
-            Console.Write("Select device (1-" + devices.Count + "): ");
-            string? input = Console.ReadLine();
+            // Select steering wheel device
+            Console.WriteLine("\n--- STEERING WHEEL SELECTION ---");
+            Console.Write($"Select device for STEERING (1-{allDevices.Count}): ");
+            var steeringDevice = SelectDevice(allDevices);
             
-            // I've never written a program meant for full production use so im being super anal about error handling
-            if (string.IsNullOrEmpty(input))
+            if (!_inputManager.ConnectToWheel(steeringDevice.InstanceGuid))
             {
-                throw new Exception("No input provided");
+                throw new Exception("Failed to connect to steering wheel device");
             }
             
-            if (!int.TryParse(input.Trim(), out int choice))
+            _calibration.SteeringDeviceGuid = steeringDevice.InstanceGuid.ToString();
+            
+            // Select pedal devices (can be same as steering or different)
+            Console.WriteLine("\n--- PEDAL SELECTION ---");
+            Console.WriteLine("Select device for pedals (can be same as steering wheel):");
+            Console.Write($"Select device for PEDALS (1-{allDevices.Count}): ");
+            var pedalDevice = SelectDevice(allDevices);
+            
+            if (pedalDevice.InstanceGuid != steeringDevice.InstanceGuid)
             {
-                throw new Exception($"Invalid input: '{input}' is not a number");
+                if (!_inputManager.ConnectToPedals(pedalDevice.InstanceGuid))
+                {
+                    Console.WriteLine("Warning: Failed to connect to separate pedal device, will use steering wheel device for pedals");
+                    pedalDevice = steeringDevice;
+                }
             }
             
-            if (choice < 1 || choice > devices.Count)
+            _calibration.ThrottleDeviceGuid = pedalDevice.InstanceGuid.ToString();
+            _calibration.BrakeDeviceGuid = pedalDevice.InstanceGuid.ToString();
+            _calibration.ClutchDeviceGuid = pedalDevice.InstanceGuid.ToString();
+            
+            // Select shifter device (optional)
+            Console.WriteLine("\n--- SHIFTER SELECTION (OPTIONAL) ---");
+            Console.Write("Do you have a separate shifter/button box? (y/N): ");
+            string? shifterInput = Console.ReadLine();
+            bool hasShifter = !string.IsNullOrEmpty(shifterInput) && 
+                             (shifterInput.Trim().ToLower().StartsWith("y") || shifterInput.Trim().ToLower() == "yes");
+            
+            if (hasShifter)
             {
-                throw new Exception($"Invalid choice: {choice} is out of range (1-{devices.Count})");
-            }
-            
-            var selectedDevice = devices[choice - 1];
-            Console.WriteLine($"Connecting to: {selectedDevice.ProductName}...");
-            
-            Thread.Sleep(500);
-            
-            if (_inputManager.ConnectToWheel(selectedDevice.InstanceGuid))
-            {
-                Console.WriteLine($"Connected to: {selectedDevice.ProductName}");
+                Console.Write($"Select device for SHIFTER (1-{allDevices.Count}): ");
+                var shifterDevice = SelectDevice(allDevices);
+                
+                if (shifterDevice.InstanceGuid != steeringDevice.InstanceGuid && 
+                    shifterDevice.InstanceGuid != pedalDevice.InstanceGuid)
+                {
+                    if (!_inputManager.ConnectToShifter(shifterDevice.InstanceGuid))
+                    {
+                        Console.WriteLine("Warning: Failed to connect to separate shifter device, will use steering wheel device for shifter");
+                        shifterDevice = steeringDevice;
+                    }
+                }
+                
+                _calibration.ShifterDeviceGuid = shifterDevice.InstanceGuid.ToString();
             }
             else
             {
-                throw new Exception("Failed to connect to selected device");
+                _calibration.ShifterDeviceGuid = steeringDevice.InstanceGuid.ToString();
             }
+            
+            Console.WriteLine("\nDevice setup complete!");
         }
         catch (Exception ex)
         {
@@ -144,11 +176,38 @@ class Program
         return Task.CompletedTask;
     }
     
+    static DeviceInstance SelectDevice(List<DeviceInstance> devices)
+    {
+        string? input = Console.ReadLine();
+        
+        if (string.IsNullOrEmpty(input))
+        {
+            throw new Exception("No input provided");
+        }
+        
+        if (!int.TryParse(input.Trim(), out int choice))
+        {
+            throw new Exception($"Invalid input: '{input}' is not a number");
+        }
+        
+        if (choice < 1 || choice > devices.Count)
+        {
+            throw new Exception($"Invalid choice: {choice} is out of range (1-{devices.Count})");
+        }
+        
+        var selectedDevice = devices[choice - 1];
+        Console.WriteLine($"Selected: {selectedDevice.ProductName}");
+        Thread.Sleep(300);
+        
+        return selectedDevice;
+    }
+    
     static bool NeedsCalibration()
     {
         return _calibration.ThrottleAxis == -1 || 
                _calibration.BrakeAxis == -1 || 
-               _calibration.SteeringAxis == -1;
+               _calibration.SteeringAxis == -1 ||
+               string.IsNullOrEmpty(_calibration.SteeringDeviceGuid);
     }
     
     static async Task RunCalibrationAsync()
@@ -158,22 +217,27 @@ class Program
         Console.WriteLine("Press ENTER to continue...");
         Console.ReadLine();
         
+        // Get device GUIDs
+        var steeringGuid = Guid.Parse(_calibration.SteeringDeviceGuid);
+        var pedalGuid = Guid.Parse(_calibration.ThrottleDeviceGuid);
+        var shifterGuid = Guid.Parse(_calibration.ShifterDeviceGuid);
+        
         // Calibrate throttle pedal
         await CalibratePedalAsync("THROTTLE", "throttle pedal", 
-            (cal, axis, min, max) => { cal.ThrottleAxis = axis; cal.ThrottleMin = min; cal.ThrottleMax = max; });
+            (cal, axis, min, max) => { cal.ThrottleAxis = axis; cal.ThrottleMin = min; cal.ThrottleMax = max; }, pedalGuid);
         
         // Calibrate brake pedal
         await CalibratePedalAsync("BRAKE", "brake pedal", 
-            (cal, axis, min, max) => { cal.BrakeAxis = axis; cal.BrakeMin = min; cal.BrakeMax = max; });
+            (cal, axis, min, max) => { cal.BrakeAxis = axis; cal.BrakeMin = min; cal.BrakeMax = max; }, pedalGuid);
         
         // Calibrate clutch pedal (optional)
-        await CalibrateClutchAsync();
+        await CalibrateClutchAsync(pedalGuid);
         
         // Calibrate steering wheel
-        await CalibrateSteeringAsync();
+        await CalibrateSteeringAsync(steeringGuid);
         
         // Calibrate shift buttons
-        await CalibrateButtonsAsync();
+        await CalibrateButtonsAsync(shifterGuid);
         
         // Save calibration
         _calibration.SaveToFile("calibration.json");
@@ -183,21 +247,21 @@ class Program
     }
     
     static async Task CalibratePedalAsync(string pedalName, string description, 
-        Action<WheelCalibration, int, int, int> setCalibration)
+        Action<WheelCalibration, int, int, int> setCalibration, Guid deviceGuid)
     {
         Console.WriteLine($"\n--- {pedalName} CALIBRATION ---");
         Console.WriteLine($"Press the {description} down ALL THE WAY and hold it.");
         Console.WriteLine("Press ENTER when ready...");
         Console.ReadLine();
         
-        var maxState = await WaitForStableInput();
+        var maxState = await WaitForStableInput(deviceGuid);
         var maxValues = GetAxisValues(maxState);
         
         Console.WriteLine($"Now RELEASE the {description} completely.");
         Console.WriteLine("Press ENTER when ready...");
         Console.ReadLine();
         
-        var minState = await WaitForStableInput();
+        var minState = await WaitForStableInput(deviceGuid);
         var minValues = GetAxisValues(minState);
         
         // Find the axis with the biggest change
@@ -222,11 +286,11 @@ class Program
         else
         {
             Console.WriteLine($"Failed to detect {pedalName} movement. Please try again.");
-            await CalibratePedalAsync(pedalName, description, setCalibration);
+            await CalibratePedalAsync(pedalName, description, setCalibration, deviceGuid);
         }
     }
     
-    static async Task CalibrateClutchAsync()
+    static async Task CalibrateClutchAsync(Guid deviceGuid)
     {
         Console.WriteLine("\n--- CLUTCH PEDAL CALIBRATION (OPTIONAL) ---");
         Console.WriteLine("Do you have a clutch pedal to calibrate?");
@@ -240,7 +304,7 @@ class Program
         if (calibrateClutch)
         {
             await CalibratePedalAsync("CLUTCH", "clutch pedal", 
-                (cal, axis, min, max) => { cal.ClutchAxis = axis; cal.ClutchMin = min; cal.ClutchMax = max; });
+                (cal, axis, min, max) => { cal.ClutchAxis = axis; cal.ClutchMin = min; cal.ClutchMax = max; }, deviceGuid);
         }
         else
         {
@@ -252,21 +316,21 @@ class Program
         }
     }
     
-    static async Task CalibrateSteeringAsync()
+    static async Task CalibrateSteeringAsync(Guid deviceGuid)
     {
         Console.WriteLine("\n--- STEERING WHEEL CALIBRATION ---");
         Console.WriteLine("Turn the steering wheel ALL THE WAY TO THE LEFT and hold it.");
         Console.WriteLine("Press ENTER when ready...");
         Console.ReadLine();
         
-        var leftState = await WaitForStableInput();
+        var leftState = await WaitForStableInput(deviceGuid);
         var leftValues = GetAxisValues(leftState);
         
         Console.WriteLine("Now turn the steering wheel ALL THE WAY TO THE RIGHT and hold it.");
         Console.WriteLine("Press ENTER when ready...");
         Console.ReadLine();
         
-        var rightState = await WaitForStableInput();
+        var rightState = await WaitForStableInput(deviceGuid);
         var rightValues = GetAxisValues(rightState);
         
         // Find the axis with the biggest change
@@ -293,11 +357,11 @@ class Program
         else
         {
             Console.WriteLine("Failed to detect steering movement. Please try again.");
-            await CalibrateSteeringAsync();
+            await CalibrateSteeringAsync(deviceGuid);
         }
     }
     
-    static async Task CalibrateButtonsAsync()
+    static async Task CalibrateButtonsAsync(Guid deviceGuid)
     {
         Console.WriteLine("\n--- BUTTON CALIBRATION (OPTIONAL) ---");
         Console.WriteLine("Do you have paddle shifters or shift buttons to calibrate?");
@@ -314,7 +378,7 @@ class Program
             Console.WriteLine("Press ENTER when ready...");
             Console.ReadLine();
             
-            var shiftUpState = await WaitForStableInput();
+            var shiftUpState = await WaitForStableInput(deviceGuid);
             _calibration.ShiftUpButton = FindPressedButton(shiftUpState);
             
             if (_calibration.ShiftUpButton != -1)
@@ -334,7 +398,7 @@ class Program
             Console.WriteLine("Press ENTER when ready...");
             Console.ReadLine();
             
-            var shiftDownState = await WaitForStableInput();
+            var shiftDownState = await WaitForStableInput(deviceGuid);
             _calibration.ShiftDownButton = FindPressedButton(shiftDownState);
             
             if (_calibration.ShiftDownButton != -1)
@@ -355,16 +419,16 @@ class Program
         }
     }
     
-    static async Task<JoystickState> WaitForStableInput()
+    static async Task<JoystickState> WaitForStableInput(Guid deviceGuid)
     {
         JoystickState? state = null;
         int stableCount = 0;
-        var lastState = _inputManager!.GetWheelState();
+        var lastState = _inputManager!.GetDeviceState(deviceGuid);
         
         while (stableCount < 10) // Wait for 10 stable readings
         {
             await Task.Delay(50);
-            state = _inputManager.GetWheelState();
+            state = _inputManager.GetDeviceState(deviceGuid);
             
             if (state != null && AreStatesEqual(state, lastState))
             {
@@ -459,75 +523,108 @@ class Program
                 }
             }
             
-            var state = _inputManager!.GetWheelState();
-            if (state != null)
-            {
-                UpdateXboxController(state);
-            }
+            UpdateXboxController();
             
             await Task.Delay(16); // ~60 FPS update rate
         }
     }
     
-    static void UpdateXboxController(JoystickState wheelState)
+    static void UpdateXboxController()
     {
         if (_controller == null) return;
         
-        var axisValues = GetAxisValues(wheelState);
+        // Get states from all connected devices
+        var steeringState = _inputManager!.GetDeviceState(Guid.Parse(_calibration.SteeringDeviceGuid));
+        var pedalState = _inputManager.GetDeviceState(Guid.Parse(_calibration.ThrottleDeviceGuid));
+        var shifterState = _inputManager.GetDeviceState(Guid.Parse(_calibration.ShifterDeviceGuid));
         
         // Map steering wheel to left thumbstick X
-        if (_calibration.SteeringAxis >= 0 && _calibration.SteeringAxis < axisValues.Length)
+        if (steeringState != null && _calibration.SteeringAxis >= 0)
         {
-            var steeringValue = axisValues[_calibration.SteeringAxis];
-            var normalizedSteering = NormalizeAxis(steeringValue, _calibration.SteeringMin, _calibration.SteeringMax);
-            _controller.SetAxisValue(Xbox360Axis.LeftThumbX, normalizedSteering);
+            var steeringValues = GetAxisValues(steeringState);
+            if (_calibration.SteeringAxis < steeringValues.Length)
+            {
+                var steeringValue = steeringValues[_calibration.SteeringAxis];
+                var normalizedSteering = NormalizeAxis(steeringValue, _calibration.SteeringMin, _calibration.SteeringMax);
+                _controller.SetAxisValue(Xbox360Axis.LeftThumbX, normalizedSteering);
+            }
         }
         
-        // Map throttle to right trigger
-        if (_calibration.ThrottleAxis >= 0 && _calibration.ThrottleAxis < axisValues.Length)
+        // Map pedals
+        if (pedalState != null)
         {
-            var throttleValue = axisValues[_calibration.ThrottleAxis];
-            var normalizedThrottle = NormalizeAxis(throttleValue, _calibration.ThrottleMin, _calibration.ThrottleMax);
-            _controller.SetSliderValue(Xbox360Slider.RightTrigger, (byte)(Math.Max(0, normalizedThrottle + 32768) / 256)); // Convert to 0-255 range
-        }
-        
-        // Map brake to left trigger
-        if (_calibration.BrakeAxis >= 0 && _calibration.BrakeAxis < axisValues.Length)
-        {
-            var brakeValue = axisValues[_calibration.BrakeAxis];
-            var normalizedBrake = NormalizeAxis(brakeValue, _calibration.BrakeMin, _calibration.BrakeMax);
-            _controller.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)(Math.Max(0, normalizedBrake + 32768) / 256)); // Convert to 0-255 range
-        }
-        
-        // Map clutch to left thumbstick Y (optional)
-        if (_calibration.ClutchAxis >= 0 && _calibration.ClutchAxis < axisValues.Length)
-        {
-            var clutchValue = axisValues[_calibration.ClutchAxis];
-            var normalizedClutch = NormalizeAxis(clutchValue, _calibration.ClutchMin, _calibration.ClutchMax);
-            _controller.SetAxisValue(Xbox360Axis.LeftThumbY, normalizedClutch);
+            var pedalValues = GetAxisValues(pedalState);
+            
+            // Map throttle to right trigger
+            if (_calibration.ThrottleAxis >= 0 && _calibration.ThrottleAxis < pedalValues.Length)
+            {
+                var throttleValue = pedalValues[_calibration.ThrottleAxis];
+                var normalizedThrottle = NormalizeAxis(throttleValue, _calibration.ThrottleMin, _calibration.ThrottleMax);
+                _controller.SetSliderValue(Xbox360Slider.RightTrigger, (byte)(Math.Max(0, normalizedThrottle + 32768) / 256));
+            }
+            
+            // Map brake to left trigger
+            if (_calibration.BrakeAxis >= 0 && _calibration.BrakeAxis < pedalValues.Length)
+            {
+                var brakeValue = pedalValues[_calibration.BrakeAxis];
+                var normalizedBrake = NormalizeAxis(brakeValue, _calibration.BrakeMin, _calibration.BrakeMax);
+                _controller.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)(Math.Max(0, normalizedBrake + 32768) / 256));
+            }
+            
+            // Map clutch to left thumbstick Y (optional)
+            if (_calibration.ClutchAxis >= 0 && _calibration.ClutchAxis < pedalValues.Length)
+            {
+                var clutchValue = pedalValues[_calibration.ClutchAxis];
+                var normalizedClutch = NormalizeAxis(clutchValue, _calibration.ClutchMin, _calibration.ClutchMax);
+                _controller.SetAxisValue(Xbox360Axis.LeftThumbY, normalizedClutch);
+            }
         }
         
         // Map shift buttons
-        if (_calibration.ShiftUpButton >= 0 && _calibration.ShiftUpButton < wheelState.Buttons.Length)
+        if (shifterState != null)
         {
-            _controller.SetButtonState(Xbox360Button.Y, wheelState.Buttons[_calibration.ShiftUpButton]);
-        }
-        
-        if (_calibration.ShiftDownButton >= 0 && _calibration.ShiftDownButton < wheelState.Buttons.Length)
-        {
-            _controller.SetButtonState(Xbox360Button.X, wheelState.Buttons[_calibration.ShiftDownButton]);
+            if (_calibration.ShiftUpButton >= 0 && _calibration.ShiftUpButton < shifterState.Buttons.Length)
+            {
+                _controller.SetButtonState(Xbox360Button.Y, shifterState.Buttons[_calibration.ShiftUpButton]);
+            }
+            
+            if (_calibration.ShiftDownButton >= 0 && _calibration.ShiftDownButton < shifterState.Buttons.Length)
+            {
+                _controller.SetButtonState(Xbox360Button.X, shifterState.Buttons[_calibration.ShiftDownButton]);
+            }
         }
         
         _controller.SubmitReport();
         
-        if (DateTime.Now.Millisecond % 20 < 16) // Update display every ~20ms
+        // Update display
+        if (DateTime.Now.Millisecond % 20 < 16)
         {
             Console.SetCursorPosition(0, Console.CursorTop);
-            var clutchDisplay = _calibration.ClutchAxis >= 0 ? axisValues[_calibration.ClutchAxis].ToString().PadLeft(6) : "N/A";
-            Console.Write($"Steering: {(_calibration.SteeringAxis >= 0 ? axisValues[_calibration.SteeringAxis].ToString().PadLeft(6) : "N/A")} | " +
-                         $"Throttle: {(_calibration.ThrottleAxis >= 0 ? axisValues[_calibration.ThrottleAxis].ToString().PadLeft(6) : "N/A")} | " +
-                         $"Brake: {(_calibration.BrakeAxis >= 0 ? axisValues[_calibration.BrakeAxis].ToString().PadLeft(6) : "N/A")} | " +
-                         $"Clutch: {clutchDisplay}    ");
+            
+            var steeringDisplay = "N/A";
+            var throttleDisplay = "N/A";
+            var brakeDisplay = "N/A";
+            var clutchDisplay = "N/A";
+            
+            if (steeringState != null && _calibration.SteeringAxis >= 0)
+            {
+                var steeringValues = GetAxisValues(steeringState);
+                if (_calibration.SteeringAxis < steeringValues.Length)
+                    steeringDisplay = steeringValues[_calibration.SteeringAxis].ToString().PadLeft(6);
+            }
+            
+            if (pedalState != null)
+            {
+                var pedalValues = GetAxisValues(pedalState);
+                if (_calibration.ThrottleAxis >= 0 && _calibration.ThrottleAxis < pedalValues.Length)
+                    throttleDisplay = pedalValues[_calibration.ThrottleAxis].ToString().PadLeft(6);
+                if (_calibration.BrakeAxis >= 0 && _calibration.BrakeAxis < pedalValues.Length)
+                    brakeDisplay = pedalValues[_calibration.BrakeAxis].ToString().PadLeft(6);
+                if (_calibration.ClutchAxis >= 0 && _calibration.ClutchAxis < pedalValues.Length)
+                    clutchDisplay = pedalValues[_calibration.ClutchAxis].ToString().PadLeft(6);
+            }
+            
+            Console.Write($"Steering: {steeringDisplay} | Throttle: {throttleDisplay} | Brake: {brakeDisplay} | Clutch: {clutchDisplay}    ");
         }
     }
     

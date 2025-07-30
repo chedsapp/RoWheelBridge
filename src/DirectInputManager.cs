@@ -11,6 +11,8 @@ public class DirectInputManager : IDisposable
     private DirectInput _directInput;
     public DirectInput DirectInputInstance => _directInput;
     private Joystick? _wheel;
+    private Joystick? _pedals;
+    private Joystick? _shifter;
     private Effect? _forceEffect;
     private bool _disposed = false;
     private bool _forceFeedbackEnabled = false;
@@ -21,7 +23,7 @@ public class DirectInputManager : IDisposable
         _directInput = new DirectInput();
     }
     
-    public List<DeviceInstance> GetWheelDevices(bool debugOutput = false)
+    public List<DeviceInstance> GetAllInputDevices(bool debugOutput = false)
     {
         var allDevices = _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
             .Where(device => device.Type != DeviceType.Mouse && 
@@ -31,14 +33,13 @@ public class DirectInputManager : IDisposable
         if (debugOutput)
             Console.WriteLine($"Found {allDevices.Count} non-mouse/keyboard devices");
         
-        // Filter and prioritize actual steering wheel devices
+        // Deduplicate by product name but keep all device types
         var filteredDevices = new List<DeviceInstance>();
         var seenProductNames = new HashSet<string>();
         var duplicateCount = 0;
         
         foreach (var device in allDevices)
         {
-            // Count duplicates for debugging
             if (seenProductNames.Contains(device.ProductName))
             {
                 duplicateCount++;
@@ -46,41 +47,27 @@ public class DirectInputManager : IDisposable
                     Console.WriteLine($"  Skipping duplicate: {device.ProductName}");
                 continue;
             }
-                
-            if (IsMainWheelDevice(device, debugOutput))
-            {
-                if (debugOutput)
-                    Console.WriteLine($"  Selected main device: {device.ProductName}");
-                filteredDevices.Add(device);
-                seenProductNames.Add(device.ProductName);
-            }
-            else
-            {
-                if (debugOutput)
-                    Console.WriteLine($"  Filtered out: {device.ProductName} (not main wheel device)");
-            }
-        }
-        
-        // If filtering was too aggressive and we have no devices, fall back to original list
-        // but still deduplicate by product name
-        if (!filteredDevices.Any())
-        {
+            
+            filteredDevices.Add(device);
+            seenProductNames.Add(device.ProductName);
+            
             if (debugOutput)
-                Console.WriteLine("No devices passed main wheel filter, using fallback with deduplication");
-            seenProductNames.Clear();
-            foreach (var device in allDevices)
             {
-                if (!seenProductNames.Contains(device.ProductName))
-                {
-                    filteredDevices.Add(device);
-                    seenProductNames.Add(device.ProductName);
-                }
+                var deviceType = GetDeviceTypeDescription(device);
+                Console.WriteLine($"  Found: {device.ProductName} ({deviceType})");
             }
         }
         
         if (debugOutput)
             Console.WriteLine($"Filtered {duplicateCount} duplicates, returning {filteredDevices.Count} unique devices");
         return filteredDevices;
+    }
+    
+    public List<DeviceInstance> GetWheelDevices(bool debugOutput = false)
+    {
+        return GetAllInputDevices(debugOutput)
+            .Where(device => IsMainWheelDevice(device, debugOutput))
+            .ToList();
     }
     
     private bool IsMainWheelDevice(DeviceInstance device, bool debugOutput = false)
@@ -141,16 +128,50 @@ public class DirectInputManager : IDisposable
         }
     }
     
+    private string GetDeviceTypeDescription(DeviceInstance device)
+    {
+        try
+        {
+            using var tempJoystick = new Joystick(_directInput, device.InstanceGuid);
+            var capabilities = tempJoystick.Capabilities;
+            
+            var features = new List<string>();
+            
+            if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback))
+                features.Add("Force Feedback");
+            
+            features.Add($"{capabilities.AxeCount} axes");
+            features.Add($"{capabilities.ButtonCount} buttons");
+            
+            // Try to categorize device type
+            string category = "Unknown";
+            if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback) && capabilities.AxeCount >= 2)
+                category = "Wheelbase";
+            else if (capabilities.AxeCount >= 3 && capabilities.ButtonCount <= 4)
+                category = "Pedals";
+            else if (capabilities.ButtonCount >= 6 && capabilities.AxeCount <= 2)
+                category = "Shifter/Buttons";
+            else if (capabilities.AxeCount >= 2)
+                category = "Multi-axis";
+            
+            return $"{category}: {string.Join(", ", features)}";
+        }
+        catch
+        {
+            return "Info unavailable";
+        }
+    }
+    
     public bool ConnectToWheel(Guid deviceGuid)
     {
         try
         {
             Console.WriteLine("Connecting to steering wheel...");
             
-            CleanupResources();
+            CleanupWheelResources();
             
             _wheel = new Joystick(_directInput, deviceGuid);
-            Console.WriteLine($"Device: {_wheel.Information.ProductName}");
+            Console.WriteLine($"Wheel Device: {_wheel.Information.ProductName}");
             
             // Check capabilities
             var capabilities = _wheel.Capabilities;
@@ -227,7 +248,7 @@ public class DirectInputManager : IDisposable
             }
             
             _wheel.Acquire();
-            Console.WriteLine("Device acquired successfully");
+            Console.WriteLine("Wheel device acquired successfully");
             
             if (hasForceFeedback && exclusiveAccessGranted)
             {
@@ -246,13 +267,71 @@ public class DirectInputManager : IDisposable
                 Console.WriteLine("Force feedback skipped - exclusive access required");
             }
             
-            Console.WriteLine($"Connection successful - Force feedback: {(_forceFeedbackEnabled ? "ENABLED" : "DISABLED")}");
+            Console.WriteLine($"Wheel connection successful - Force feedback: {(_forceFeedbackEnabled ? "ENABLED" : "DISABLED")}");
             return true;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to connect to wheel: {ex.Message}");
-            CleanupResources();
+            CleanupWheelResources();
+            return false;
+        }
+    }
+    
+    public bool ConnectToPedals(Guid deviceGuid)
+    {
+        try
+        {
+            Console.WriteLine("Connecting to pedals...");
+            
+            CleanupPedalResources();
+            
+            _pedals = new Joystick(_directInput, deviceGuid);
+            Console.WriteLine($"Pedal Device: {_pedals.Information.ProductName}");
+            
+            var consoleWindow = GetConsoleWindow();
+            if (consoleWindow == IntPtr.Zero)
+                consoleWindow = IntPtr.Zero;
+            
+            _pedals.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+            _pedals.Acquire();
+            
+            Console.WriteLine("Pedal device acquired successfully");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to connect to pedals: {ex.Message}");
+            CleanupPedalResources();
+            return false;
+        }
+    }
+    
+    public bool ConnectToShifter(Guid deviceGuid)
+    {
+        try
+        {
+            Console.WriteLine("Connecting to shifter...");
+            
+            CleanupShifterResources();
+            
+            _shifter = new Joystick(_directInput, deviceGuid);
+            Console.WriteLine($"Shifter Device: {_shifter.Information.ProductName}");
+            
+            var consoleWindow = GetConsoleWindow();
+            if (consoleWindow == IntPtr.Zero)
+                consoleWindow = IntPtr.Zero;
+            
+            _shifter.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+            _shifter.Acquire();
+            
+            Console.WriteLine("Shifter device acquired successfully");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to connect to shifter: {ex.Message}");
+            CleanupShifterResources();
             return false;
         }
     }
@@ -336,6 +415,48 @@ public class DirectInputManager : IDisposable
         }
     }
     
+    public JoystickState? GetPedalState()
+    {
+        if (_pedals == null) return null;
+        
+        try
+        {
+            _pedals.Poll();
+            return _pedals.GetCurrentState();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    
+    public JoystickState? GetShifterState()
+    {
+        if (_shifter == null) return null;
+        
+        try
+        {
+            _shifter.Poll();
+            return _shifter.GetCurrentState();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    
+    public JoystickState? GetDeviceState(Guid deviceGuid)
+    {
+        if (_wheel?.Information.InstanceGuid == deviceGuid)
+            return GetWheelState();
+        if (_pedals?.Information.InstanceGuid == deviceGuid)
+            return GetPedalState();
+        if (_shifter?.Information.InstanceGuid == deviceGuid)
+            return GetShifterState();
+        
+        return null;
+    }
+    
     public void SetForceFeedback(float leftMotor, float rightMotor)
     {
         if (!_forceFeedbackEnabled || _wheel == null || _forceEffect == null) return;
@@ -389,7 +510,7 @@ public class DirectInputManager : IDisposable
         }
     }
     
-    private void CleanupResources()
+    private void CleanupWheelResources()
     {
         try
         {
@@ -415,6 +536,41 @@ public class DirectInputManager : IDisposable
         
         _forceFeedbackEnabled = false;
         _numForceFeedbackAxes = 0;
+    }
+    
+    private void CleanupPedalResources()
+    {
+        try
+        {
+            if (_pedals != null)
+            {
+                _pedals.Unacquire();
+                _pedals.Dispose();
+                _pedals = null;
+            }
+        }
+        catch { }
+    }
+    
+    private void CleanupShifterResources()
+    {
+        try
+        {
+            if (_shifter != null)
+            {
+                _shifter.Unacquire();
+                _shifter.Dispose();
+                _shifter = null;
+            }
+        }
+        catch { }
+    }
+    
+    private void CleanupResources()
+    {
+        CleanupWheelResources();
+        CleanupPedalResources();
+        CleanupShifterResources();
     }
     
     public void Dispose()

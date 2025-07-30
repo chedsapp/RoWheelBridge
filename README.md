@@ -8,24 +8,38 @@ A .NET 9.0 application that bridges DirectInput steering wheel devices to virtua
 - A calibration settings .Json file is created after first-time calibration. It will be referenced for later startups if present
 - Use `--debug` or `-d` flag to see detailed device detection information
 
-### Device Selection
+### Multi-Device Support
 
-The program now automatically filters duplicate devices (common with racing wheel setups that show the same wheel multiple times for different components like pedals, shifter, etc.). It prioritizes:
+RoWheel Bridge supports both **combined** and **separate** device setups:
 
-1. Devices with force feedback capabilities
-2. Devices with multiple axes and buttons (main wheel unit)
-3. Devices specifically tagged as driving/joystick types
+- **Combined Setup**: Use a single device (like a Logitech G29) for steering, pedals, and shifters
+- **Separate Setup**: Use different devices for each component (e.g., separate wheelbase, pedal set, and shifter)
+- **Mixed Setup**: Any combination of the above (e.g., combined wheel+pedals with separate shifter)
 
-If you're still seeing multiple identical devices, try running with the `--debug` flag to see what's being detected and filtered.
+During device selection, you'll be prompted to choose:
+1. **Steering Wheel Device** - The device with your steering wheel (usually has force feedback)
+2. **Pedal Device** - Can be the same as steering wheel or a separate pedal set
+3. **Shifter Device** - Optional separate shifter/button box, or use steering wheel device
+
+### Device Detection
+
+The program detects and categorizes devices automatically:
+
+- **Wheelbase**: Devices with force feedback and multiple axes (steering wheels)
+- **Pedals**: Devices with multiple axes but fewer buttons (dedicated pedal sets)
+- **Shifter/Buttons**: Devices with many buttons but fewer axes (button boxes, shifters)
+- **Multi-axis**: General devices that don't fit other categories
+
+Use the `--debug` flag to see detailed device information and categorization.
 
 ### Calibration Options
 
-During the calibration process, you can now skip optional components:
+During calibration, you can skip optional components:
 
-- **Clutch Pedal**: Many racing wheels only have throttle and brake pedals. You'll be asked if you want to calibrate a clutch pedal.
-- **Shift Buttons**: If you don't have paddle shifters or shift buttons, you can skip this calibration step.
+- **Clutch Pedal**: Many setups only have throttle and brake pedals
+- **Shift Buttons**: Skip if you don't have paddle shifters or shift buttons
 
-The program will work perfectly fine with just steering wheel, throttle, and brake pedals calibrated.
+The program works perfectly with just steering wheel, throttle, and brake pedals calibrated.
 
 ## Requirements
 
