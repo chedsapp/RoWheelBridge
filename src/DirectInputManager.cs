@@ -9,6 +9,7 @@ public class DirectInputManager : IDisposable
     private static extern IntPtr GetConsoleWindow();
     
     private DirectInput _directInput;
+    public DirectInput DirectInputInstance => _directInput;
     private Joystick? _wheel;
     private Effect? _forceEffect;
     private bool _disposed = false;
@@ -20,12 +21,124 @@ public class DirectInputManager : IDisposable
         _directInput = new DirectInput();
     }
     
-    public List<DeviceInstance> GetWheelDevices()
+    public List<DeviceInstance> GetWheelDevices(bool debugOutput = false)
     {
-        return _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
+        var allDevices = _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
             .Where(device => device.Type != DeviceType.Mouse && 
                            device.Type != DeviceType.Keyboard)
             .ToList();
+        
+        if (debugOutput)
+            Console.WriteLine($"Found {allDevices.Count} non-mouse/keyboard devices");
+        
+        // Filter and prioritize actual steering wheel devices
+        var filteredDevices = new List<DeviceInstance>();
+        var seenProductNames = new HashSet<string>();
+        var duplicateCount = 0;
+        
+        foreach (var device in allDevices)
+        {
+            // Count duplicates for debugging
+            if (seenProductNames.Contains(device.ProductName))
+            {
+                duplicateCount++;
+                if (debugOutput)
+                    Console.WriteLine($"  Skipping duplicate: {device.ProductName}");
+                continue;
+            }
+                
+            if (IsMainWheelDevice(device, debugOutput))
+            {
+                if (debugOutput)
+                    Console.WriteLine($"  Selected main device: {device.ProductName}");
+                filteredDevices.Add(device);
+                seenProductNames.Add(device.ProductName);
+            }
+            else
+            {
+                if (debugOutput)
+                    Console.WriteLine($"  Filtered out: {device.ProductName} (not main wheel device)");
+            }
+        }
+        
+        // If filtering was too aggressive and we have no devices, fall back to original list
+        // but still deduplicate by product name
+        if (!filteredDevices.Any())
+        {
+            if (debugOutput)
+                Console.WriteLine("No devices passed main wheel filter, using fallback with deduplication");
+            seenProductNames.Clear();
+            foreach (var device in allDevices)
+            {
+                if (!seenProductNames.Contains(device.ProductName))
+                {
+                    filteredDevices.Add(device);
+                    seenProductNames.Add(device.ProductName);
+                }
+            }
+        }
+        
+        if (debugOutput)
+            Console.WriteLine($"Filtered {duplicateCount} duplicates, returning {filteredDevices.Count} unique devices");
+        return filteredDevices;
+    }
+    
+    private bool IsMainWheelDevice(DeviceInstance device, bool debugOutput = false)
+    {
+        try
+        {
+            // Create a temporary joystick to check capabilities
+            using var tempJoystick = new Joystick(_directInput, device.InstanceGuid);
+            var capabilities = tempJoystick.Capabilities;
+            
+            if (debugOutput)
+                Console.WriteLine($"    Checking {device.ProductName}: {capabilities.AxeCount} axes, {capabilities.ButtonCount} buttons, FF: {capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback)}");
+            
+            // Main wheel device typically has:
+            // 1. Multiple axes (at least X for steering, often Y/Z for pedals)
+            // 2. Multiple buttons (for paddle shifters, etc.)
+            // 3. Possibly force feedback
+            
+            bool hasMultipleAxes = capabilities.AxeCount >= 3; // Steering + at least 2 pedal axes
+            bool hasReasonableButtons = capabilities.ButtonCount >= 2; // At least a few buttons
+            bool hasForceFeedback = capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback);
+            
+            // Prioritize devices with force feedback (usually the main wheel)
+            if (hasForceFeedback && capabilities.AxeCount >= 2 && hasReasonableButtons)
+            {
+                if (debugOutput)
+                    Console.WriteLine($"    -> Selected (force feedback device)");
+                return true;
+            }
+                
+            // Otherwise, look for devices with good axis and button counts
+            if (hasMultipleAxes && capabilities.ButtonCount >= 4)
+            {
+                if (debugOutput)
+                    Console.WriteLine($"    -> Selected (multi-axis device with buttons)");
+                return true;
+            }
+            
+            // Also accept devices that are specifically racing wheel or joystick types
+            if ((device.Type == DeviceType.Driving || device.Type == DeviceType.Joystick) && 
+                capabilities.AxeCount >= 2 && hasReasonableButtons)
+            {
+                if (debugOutput)
+                    Console.WriteLine($"    -> Selected (driving/joystick type)");
+                return true;
+            }
+                
+            if (debugOutput)
+                Console.WriteLine($"    -> Rejected");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (debugOutput)
+                Console.WriteLine($"    -> Error checking device: {ex.Message}");
+            // If we can't check capabilities, include it as a fallback
+            return false;
+        }
     }
     
     public bool ConnectToWheel(Guid deviceGuid)

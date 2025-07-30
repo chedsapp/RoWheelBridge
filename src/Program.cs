@@ -25,11 +25,18 @@ class Program
     private static bool _running = true;
     private static ConsoleCtrlDelegate _consoleHandler = new ConsoleCtrlDelegate(ConsoleCtrlCheck);
     
+    private static bool _debugMode = false;
+    
     static async Task Main(string[] args)
     {
         Console.WriteLine("=== RoWheel Bridge ===");
         Console.WriteLine("DirectInput Steering Wheel to Xbox Controller Bridge");
         Console.WriteLine();
+        
+        // Check for debug flag
+        _debugMode = args.Contains("--debug") || args.Contains("-d");
+        if (_debugMode)
+            Console.WriteLine("Debug mode enabled\n");
         
         try
         {
@@ -79,7 +86,7 @@ class Program
     {
         try
         {
-            var devices = _inputManager!.GetWheelDevices();
+            var devices = _inputManager!.GetWheelDevices(_debugMode);
             
             if (!devices.Any())
             {
@@ -89,7 +96,8 @@ class Program
             Console.WriteLine("Available steering wheel devices:");
             for (int i = 0; i < devices.Count; i++)
             {
-                Console.WriteLine($"{i + 1}. {devices[i].ProductName}");
+                var deviceInfo = GetDeviceInfo(devices[i]);
+                Console.WriteLine($"{i + 1}. {devices[i].ProductName} {deviceInfo}");
             }
             
             Console.Write("Select device (1-" + devices.Count + "): ");
@@ -158,9 +166,8 @@ class Program
         await CalibratePedalAsync("BRAKE", "brake pedal", 
             (cal, axis, min, max) => { cal.BrakeAxis = axis; cal.BrakeMin = min; cal.BrakeMax = max; });
         
-        // Calibrate clutch pedal
-        await CalibratePedalAsync("CLUTCH", "clutch pedal", 
-            (cal, axis, min, max) => { cal.ClutchAxis = axis; cal.ClutchMin = min; cal.ClutchMax = max; });
+        // Calibrate clutch pedal (optional)
+        await CalibrateClutchAsync();
         
         // Calibrate steering wheel
         await CalibrateSteeringAsync();
@@ -219,6 +226,32 @@ class Program
         }
     }
     
+    static async Task CalibrateClutchAsync()
+    {
+        Console.WriteLine("\n--- CLUTCH PEDAL CALIBRATION (OPTIONAL) ---");
+        Console.WriteLine("Do you have a clutch pedal to calibrate?");
+        Console.WriteLine("Many racing wheels only have throttle and brake pedals.");
+        Console.Write("Calibrate clutch pedal? (y/N): ");
+        
+        string? input = Console.ReadLine();
+        bool calibrateClutch = !string.IsNullOrEmpty(input) && 
+                              (input.Trim().ToLower().StartsWith("y") || input.Trim().ToLower() == "yes");
+        
+        if (calibrateClutch)
+        {
+            await CalibratePedalAsync("CLUTCH", "clutch pedal", 
+                (cal, axis, min, max) => { cal.ClutchAxis = axis; cal.ClutchMin = min; cal.ClutchMax = max; });
+        }
+        else
+        {
+            Console.WriteLine("Clutch pedal calibration skipped.");
+            // Ensure clutch is disabled in calibration
+            _calibration.ClutchAxis = -1;
+            _calibration.ClutchMin = 0;
+            _calibration.ClutchMax = 0;
+        }
+    }
+    
     static async Task CalibrateSteeringAsync()
     {
         Console.WriteLine("\n--- STEERING WHEEL CALIBRATION ---");
@@ -266,43 +299,59 @@ class Program
     
     static async Task CalibrateButtonsAsync()
     {
-        Console.WriteLine("\n--- BUTTON CALIBRATION ---");
+        Console.WriteLine("\n--- BUTTON CALIBRATION (OPTIONAL) ---");
+        Console.WriteLine("Do you have paddle shifters or shift buttons to calibrate?");
+        Console.Write("Calibrate shift buttons? (y/N): ");
         
-        // Shift up button
-        Console.WriteLine("Press and hold the SHIFT UP button.");
-        Console.WriteLine("Press ENTER when ready...");
-        Console.ReadLine();
+        string? input = Console.ReadLine();
+        bool calibrateButtons = !string.IsNullOrEmpty(input) && 
+                               (input.Trim().ToLower().StartsWith("y") || input.Trim().ToLower() == "yes");
         
-        var shiftUpState = await WaitForStableInput();
-        _calibration.ShiftUpButton = FindPressedButton(shiftUpState);
-        
-        if (_calibration.ShiftUpButton != -1)
+        if (calibrateButtons)
         {
-            Console.WriteLine($"Shift Up button detected: Button {_calibration.ShiftUpButton}");
+            // Shift up button
+            Console.WriteLine("\nPress and hold the SHIFT UP button (or paddle).");
+            Console.WriteLine("Press ENTER when ready...");
+            Console.ReadLine();
+            
+            var shiftUpState = await WaitForStableInput();
+            _calibration.ShiftUpButton = FindPressedButton(shiftUpState);
+            
+            if (_calibration.ShiftUpButton != -1)
+            {
+                Console.WriteLine($"Shift Up button detected: Button {_calibration.ShiftUpButton}");
+            }
+            else
+            {
+                Console.WriteLine("No button press detected for Shift Up.");
+            }
+            
+            Console.WriteLine("Release the button and wait...");
+            await Task.Delay(1000);
+            
+            // Shift down button
+            Console.WriteLine("Press and hold the SHIFT DOWN button (or paddle).");
+            Console.WriteLine("Press ENTER when ready...");
+            Console.ReadLine();
+            
+            var shiftDownState = await WaitForStableInput();
+            _calibration.ShiftDownButton = FindPressedButton(shiftDownState);
+            
+            if (_calibration.ShiftDownButton != -1)
+            {
+                Console.WriteLine($"Shift Down button detected: Button {_calibration.ShiftDownButton}");
+            }
+            else
+            {
+                Console.WriteLine("No button press detected for Shift Down.");
+            }
         }
         else
         {
-            Console.WriteLine("No button press detected for Shift Up.");
-        }
-        
-        Console.WriteLine("Release the button and wait...");
-        await Task.Delay(1000);
-        
-        // Shift down button
-        Console.WriteLine("Press and hold the SHIFT DOWN button.");
-        Console.WriteLine("Press ENTER when ready...");
-        Console.ReadLine();
-        
-        var shiftDownState = await WaitForStableInput();
-        _calibration.ShiftDownButton = FindPressedButton(shiftDownState);
-        
-        if (_calibration.ShiftDownButton != -1)
-        {
-            Console.WriteLine($"Shift Down button detected: Button {_calibration.ShiftDownButton}");
-        }
-        else
-        {
-            Console.WriteLine("No button press detected for Shift Down.");
+            Console.WriteLine("Button calibration skipped.");
+            // Ensure buttons are disabled in calibration
+            _calibration.ShiftUpButton = -1;
+            _calibration.ShiftDownButton = -1;
         }
     }
     
@@ -366,6 +415,29 @@ class Program
                 return i;
         }
         return -1;
+    }
+    
+    static string GetDeviceInfo(DeviceInstance device)
+    {
+        try
+        {
+            using var tempJoystick = new Joystick(_inputManager!.DirectInputInstance, device.InstanceGuid);
+            var capabilities = tempJoystick.Capabilities;
+            
+            var info = new List<string>();
+            
+            if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback))
+                info.Add("Force Feedback");
+                
+            info.Add($"{capabilities.AxeCount} axes");
+            info.Add($"{capabilities.ButtonCount} buttons");
+            
+            return $"({string.Join(", ", info)})";
+        }
+        catch
+        {
+            return "(info unavailable)";
+        }
     }    
 
     static async Task RunMainLoopAsync()
@@ -427,7 +499,7 @@ class Program
             _controller.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)(Math.Max(0, normalizedBrake + 32768) / 256)); // Convert to 0-255 range
         }
         
-        // Map clutch to right thumbstick Y (optional)
+        // Map clutch to left thumbstick Y (optional)
         if (_calibration.ClutchAxis >= 0 && _calibration.ClutchAxis < axisValues.Length)
         {
             var clutchValue = axisValues[_calibration.ClutchAxis];
@@ -451,9 +523,11 @@ class Program
         if (DateTime.Now.Millisecond % 20 < 16) // Update display every ~20ms
         {
             Console.SetCursorPosition(0, Console.CursorTop);
+            var clutchDisplay = _calibration.ClutchAxis >= 0 ? axisValues[_calibration.ClutchAxis].ToString().PadLeft(6) : "N/A";
             Console.Write($"Steering: {(_calibration.SteeringAxis >= 0 ? axisValues[_calibration.SteeringAxis].ToString().PadLeft(6) : "N/A")} | " +
                          $"Throttle: {(_calibration.ThrottleAxis >= 0 ? axisValues[_calibration.ThrottleAxis].ToString().PadLeft(6) : "N/A")} | " +
-                         $"Brake: {(_calibration.BrakeAxis >= 0 ? axisValues[_calibration.BrakeAxis].ToString().PadLeft(6) : "N/A")}    ");
+                         $"Brake: {(_calibration.BrakeAxis >= 0 ? axisValues[_calibration.BrakeAxis].ToString().PadLeft(6) : "N/A")} | " +
+                         $"Clutch: {clutchDisplay}    ");
         }
     }
     
