@@ -25,106 +25,196 @@ public class DirectInputManager : IDisposable
     
     public List<DeviceInstance> GetAllInputDevices(bool debugOutput = false)
     {
-        var allDevices = _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
-            .Where(device => device.Type != DeviceType.Mouse && 
-                           device.Type != DeviceType.Keyboard)
-            .ToList();
-        
-        if (debugOutput)
-            Console.WriteLine($"Found {allDevices.Count} non-mouse/keyboard devices");
-        
-        // Deduplicate by product name but keep all device types
-        var filteredDevices = new List<DeviceInstance>();
-        var seenProductNames = new HashSet<string>();
-        var duplicateCount = 0;
-        
-        foreach (var device in allDevices)
-        {
-            if (seenProductNames.Contains(device.ProductName))
-            {
-                duplicateCount++;
-                if (debugOutput)
-                    Console.WriteLine($"  Skipping duplicate: {device.ProductName}");
-                continue;
-            }
-            
-            filteredDevices.Add(device);
-            seenProductNames.Add(device.ProductName);
-            
-            if (debugOutput)
-            {
-                var deviceType = GetDeviceTypeDescription(device);
-                Console.WriteLine($"  Found: {device.ProductName} ({deviceType})");
-            }
-        }
-        
-        if (debugOutput)
-            Console.WriteLine($"Filtered {duplicateCount} duplicates, returning {filteredDevices.Count} unique devices");
-        return filteredDevices;
-    }
-    
-    public List<DeviceInstance> GetWheelDevices(bool debugOutput = false)
-    {
-        return GetAllInputDevices(debugOutput)
-            .Where(device => IsMainWheelDevice(device, debugOutput))
-            .ToList();
-    }
-    
-    private bool IsMainWheelDevice(DeviceInstance device, bool debugOutput = false)
-    {
         try
         {
-            // Create a temporary joystick to check capabilities
-            using var tempJoystick = new Joystick(_directInput, device.InstanceGuid);
-            var capabilities = tempJoystick.Capabilities;
+            if (debugOutput)
+                Console.WriteLine("Starting device enumeration...");
+            
+            var allDevices = _directInput.GetDevices(DeviceClass.All, DeviceEnumerationFlags.AllDevices)
+                .Where(device => device.Type != DeviceType.Mouse && 
+                               device.Type != DeviceType.Keyboard)
+                .ToList();
             
             if (debugOutput)
-                Console.WriteLine($"    Checking {device.ProductName}: {capabilities.AxeCount} axes, {capabilities.ButtonCount} buttons, FF: {capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback)}");
+                Console.WriteLine($"Found {allDevices.Count} non-mouse/keyboard devices");
             
-            // Main wheel device typically has:
-            // 1. Multiple axes (at least X for steering, often Y/Z for pedals)
-            // 2. Multiple buttons (for paddle shifters, etc.)
-            // 3. Possibly force feedback
-            
-            bool hasMultipleAxes = capabilities.AxeCount >= 3; // Steering + at least 2 pedal axes
-            bool hasReasonableButtons = capabilities.ButtonCount >= 2; // At least a few buttons
-            bool hasForceFeedback = capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback);
-            
-            // Prioritize devices with force feedback (usually the main wheel)
-            if (hasForceFeedback && capabilities.AxeCount >= 2 && hasReasonableButtons)
+            // Also try GameControl class specifically for better wheel detection
+            try
             {
-                if (debugOutput)
-                    Console.WriteLine($"    -> Selected (force feedback device)");
-                return true;
-            }
+                var gameDevices = _directInput.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AllDevices)
+                    .Where(device => device.Type != DeviceType.Mouse && 
+                                   device.Type != DeviceType.Keyboard)
+                    .ToList();
                 
-            // Otherwise, look for devices with good axis and button counts
-            if (hasMultipleAxes && capabilities.ButtonCount >= 4)
+                if (debugOutput)
+                    Console.WriteLine($"Found {gameDevices.Count} additional game control devices");
+                
+                // Merge with existing devices, avoiding duplicates by GUID
+                var existingGuids = allDevices.Select(d => d.InstanceGuid).ToHashSet();
+                var newDevices = gameDevices.Where(d => !existingGuids.Contains(d.InstanceGuid)).ToList();
+                allDevices.AddRange(newDevices);
+                
+                if (debugOutput && newDevices.Any())
+                    Console.WriteLine($"Added {newDevices.Count} unique game control devices");
+            }
+            catch (Exception ex)
             {
                 if (debugOutput)
-                    Console.WriteLine($"    -> Selected (multi-axis device with buttons)");
-                return true;
+                    Console.WriteLine($"Warning: Could not enumerate GameControl devices: {ex.Message}");
             }
             
-            // Also accept devices that are specifically racing wheel or joystick types
-            if ((device.Type == DeviceType.Driving || device.Type == DeviceType.Joystick) && 
-                capabilities.AxeCount >= 2 && hasReasonableButtons)
+            if (!allDevices.Any())
             {
                 if (debugOutput)
-                    Console.WriteLine($"    -> Selected (driving/joystick type)");
-                return true;
+                    Console.WriteLine("No devices found at all - this might indicate a DirectInput issue");
+                return new List<DeviceInstance>();
             }
+            
+            // Group by name and select the best instance of each device
+            var deviceGroups = allDevices.GroupBy(d => d.ProductName).ToList();
+            var filteredDevices = new List<DeviceInstance>();
+            var duplicateCount = 0;
+            
+            foreach (var group in deviceGroups)
+            {
+                var devices = group.ToList();
                 
+                if (devices.Count > 1)
+                {
+                    duplicateCount += devices.Count - 1;
+                    if (debugOutput)
+                        Console.WriteLine($"  Found {devices.Count} instances of: {group.Key}");
+                    
+                    // Prioritize devices with more capabilities and working connections
+                    var bestDevice = devices.OrderByDescending(d => GetDeviceCapabilityScore(d, debugOutput))
+                                           .First();
+                    filteredDevices.Add(bestDevice);
+                    
+                    if (debugOutput)
+                    {
+                        foreach (var device in devices)
+                        {
+                            var deviceType = GetDeviceTypeDescription(device);
+                            var score = GetDeviceCapabilityScore(device, false);
+                            var selected = device == bestDevice ? " [SELECTED]" : "";
+                            Console.WriteLine($"    Instance: {device.InstanceGuid} ({deviceType}) Score: {score}{selected}");
+                        }
+                    }
+                }
+                else
+                {
+                    filteredDevices.Add(devices[0]);
+                    if (debugOutput)
+                    {
+                        var deviceType = GetDeviceTypeDescription(devices[0]);
+                        Console.WriteLine($"  Found: {devices[0].ProductName} ({deviceType})");
+                    }
+                }
+            }
+            
             if (debugOutput)
-                Console.WriteLine($"    -> Rejected");
-            return false;
+                Console.WriteLine($"Filtered {duplicateCount} duplicates, returning {filteredDevices.Count} unique devices");
+            
+            return filteredDevices;
         }
         catch (Exception ex)
         {
             if (debugOutput)
-                Console.WriteLine($"    -> Error checking device: {ex.Message}");
-            // If we can't check capabilities, include it as a fallback
-            return false;
+                Console.WriteLine($"Error during device enumeration: {ex.Message}");
+            return new List<DeviceInstance>();
+        }
+    }
+    
+
+    
+    private int GetDeviceCapabilityScore(DeviceInstance device, bool debugOutput = false)
+    {
+        try
+        {
+            using var tempJoystick = new Joystick(_directInput, device.InstanceGuid);
+            var capabilities = tempJoystick.Capabilities;
+            
+            int score = 0;
+            
+            // Force feedback devices get highest priority (likely main wheel)
+            if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback))
+                score += 1000;
+            
+            // Driving type devices get high priority
+            if (device.Type == DeviceType.Driving)
+                score += 500;
+            
+            // Check for common wheel device names (case insensitive)
+            string productName = device.ProductName.ToLowerInvariant();
+            bool hasWheelName = productName.Contains("wheel") || 
+                               productName.Contains("g25") || productName.Contains("g27") || productName.Contains("g29") || 
+                               productName.Contains("g920") || productName.Contains("g923") || productName.Contains("g935") ||
+                               productName.Contains("t150") || productName.Contains("t300") || productName.Contains("t500") || 
+                               productName.Contains("tmx") || productName.Contains("t248") ||
+                               productName.Contains("csl") || productName.Contains("clubsport") || productName.Contains("podium") ||
+                               productName.Contains("driving") || productName.Contains("racing") ||
+                               productName.Contains("fanatec") || productName.Contains("thrustmaster") || productName.Contains("logitech");
+            
+            if (hasWheelName)
+                score += 300; // Bonus for wheel-like names
+            
+            // More axes generally means more capable device
+            score += capabilities.AxeCount * 15;
+            
+            // More buttons can indicate a more complete device
+            score += capabilities.ButtonCount * 3;
+            
+            // POV hats add some value
+            score += capabilities.PovCount * 8;
+            
+            // Test if we can actually connect to the device and read state
+            bool canConnect = false;
+            bool hasValidState = false;
+            try
+            {
+                tempJoystick.SetCooperativeLevel(IntPtr.Zero, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+                tempJoystick.Acquire();
+                var state = tempJoystick.GetCurrentState();
+                canConnect = true;
+                
+                // Check if the device provides meaningful data
+                var axisValues = new int[] { state.X, state.Y, state.Z, state.RotationX, state.RotationY, state.RotationZ };
+                hasValidState = axisValues.Any(v => v != 0) || state.Buttons.Any(b => b);
+                
+                tempJoystick.Unacquire();
+                
+                score += 100; // Bonus for working connection
+                if (hasValidState)
+                    score += 50; // Extra bonus for devices that provide data
+            }
+            catch
+            {
+                score -= 200; // Heavy penalty for connection issues
+            }
+            
+            // Penalize devices with no capabilities
+            if (capabilities.AxeCount == 0 && capabilities.ButtonCount == 0)
+                score -= 500;
+            
+            if (debugOutput)
+            {
+                Console.WriteLine($"      Score calculation:");
+                Console.WriteLine($"        Force Feedback: {capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback)} (+{(capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback) ? 1000 : 0)})");
+                Console.WriteLine($"        Device Type: {device.Type} (+{(device.Type == DeviceType.Driving ? 500 : 0)})");
+                Console.WriteLine($"        Wheel Name: {hasWheelName} (+{(hasWheelName ? 300 : 0)})");
+                Console.WriteLine($"        Axes: {capabilities.AxeCount} (+{capabilities.AxeCount * 15})");
+                Console.WriteLine($"        Buttons: {capabilities.ButtonCount} (+{capabilities.ButtonCount * 3})");
+                Console.WriteLine($"        Connection: {canConnect} (+{(canConnect ? 100 : -200)})");
+                Console.WriteLine($"        Total Score: {score}");
+            }
+            
+            return score;
+        }
+        catch (Exception ex)
+        {
+            if (debugOutput)
+                Console.WriteLine($"      Error calculating score: {ex.Message}");
+            return -500; // Heavily penalize devices we can't examine
         }
     }
     
@@ -137,28 +227,67 @@ public class DirectInputManager : IDisposable
             
             var features = new List<string>();
             
+            // Connection status
+            bool canConnect = false;
+            try
+            {
+                tempJoystick.SetCooperativeLevel(IntPtr.Zero, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+                tempJoystick.Acquire();
+                var state = tempJoystick.GetCurrentState();
+                canConnect = true;
+                tempJoystick.Unacquire();
+            }
+            catch
+            {
+                // Connection failed
+            }
+            
+            // Basic capabilities
             if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback))
                 features.Add("Force Feedback");
             
             features.Add($"{capabilities.AxeCount} axes");
             features.Add($"{capabilities.ButtonCount} buttons");
             
-            // Try to categorize device type
+            if (capabilities.PovCount > 0)
+                features.Add($"{capabilities.PovCount} POV");
+            
+            // Connection status
+            features.Add(canConnect ? "Working" : "Connection Failed");
+            
+            // Try to categorize device type based on name and capabilities
+            string productName = device.ProductName.ToLowerInvariant();
             string category = "Unknown";
-            if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback) && capabilities.AxeCount >= 2)
-                category = "Wheelbase";
-            else if (capabilities.AxeCount >= 3 && capabilities.ButtonCount <= 4)
-                category = "Pedals";
-            else if (capabilities.ButtonCount >= 6 && capabilities.AxeCount <= 2)
-                category = "Shifter/Buttons";
+            
+            // Check for wheel-specific names first
+            if (productName.Contains("g25") || productName.Contains("g27") || productName.Contains("g29") || 
+                productName.Contains("g920") || productName.Contains("g923") || productName.Contains("g935"))
+                category = "Logitech Wheel";
+            else if (productName.Contains("t150") || productName.Contains("t300") || productName.Contains("t500") || 
+                     productName.Contains("tmx") || productName.Contains("t248"))
+                category = "Thrustmaster Wheel";
+            else if (productName.Contains("csl") || productName.Contains("clubsport") || productName.Contains("podium"))
+                category = "Fanatec Wheel";
+            else if (productName.Contains("wheel") || productName.Contains("driving") || productName.Contains("racing"))
+                category = "Racing Wheel";
+            else if (device.Type == DeviceType.Driving)
+                category = "Driving Device";
+            else if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback) && capabilities.AxeCount >= 2)
+                category = "Force Feedback Device";
+            else if (capabilities.AxeCount >= 3 && capabilities.ButtonCount <= 6)
+                category = "Pedal Set";
+            else if (capabilities.ButtonCount >= 8 && capabilities.AxeCount <= 2)
+                category = "Button Box/Shifter";
             else if (capabilities.AxeCount >= 2)
-                category = "Multi-axis";
+                category = "Multi-axis Controller";
+            else if (capabilities.ButtonCount > 0)
+                category = "Button Controller";
             
             return $"{category}: {string.Join(", ", features)}";
         }
-        catch
+        catch (Exception ex)
         {
-            return "Info unavailable";
+            return $"Error: {ex.Message}";
         }
     }
     
@@ -173,23 +302,38 @@ public class DirectInputManager : IDisposable
             _wheel = new Joystick(_directInput, deviceGuid);
             Console.WriteLine($"Wheel Device: {_wheel.Information.ProductName}");
             
-            // Check capabilities
+            // Check capabilities with detailed reporting
             var capabilities = _wheel.Capabilities;
             bool hasForceFeedback = capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback);
-            Console.WriteLine($"Force Feedback Support: {(hasForceFeedback ? "Yes" : "No")}");
+            Console.WriteLine($"Device Capabilities:");
+            Console.WriteLine($"  Axes: {capabilities.AxeCount}");
+            Console.WriteLine($"  Buttons: {capabilities.ButtonCount}");
+            Console.WriteLine($"  POV Hats: {capabilities.PovCount}");
+            Console.WriteLine($"  Force Feedback: {(hasForceFeedback ? "Yes" : "No")}");
+            
+            // Verify we have at least basic capabilities
+            if (capabilities.AxeCount == 0)
+            {
+                Console.WriteLine("WARNING: Device reports 0 axes - this may indicate a driver issue");
+                Console.WriteLine("Try updating your wheel drivers or running as administrator");
+            }
+            
+            if (capabilities.ButtonCount == 0)
+            {
+                Console.WriteLine("WARNING: Device reports 0 buttons - this may indicate a driver issue");
+            }
             
             var consoleWindow = GetConsoleWindow();
             if (consoleWindow == IntPtr.Zero)
             {
                 Console.WriteLine("Warning: Could not get console window handle, using desktop window");
-                consoleWindow = IntPtr.Zero; // Use desktop window
+                consoleWindow = IntPtr.Zero;
             }
             
             bool exclusiveAccessGranted = false;
             
             if (hasForceFeedback)
             {
-                // Try to get exclusive access for force feedback
                 Console.WriteLine("Attempting to get exclusive access for force feedback...");
                 
                 try
@@ -221,12 +365,12 @@ public class DirectInputManager : IDisposable
                         catch (Exception ex3)
                         {
                             Console.WriteLine($"Failed to set any cooperative level: {ex3.Message}");
+                            Console.WriteLine("This usually indicates a driver or permission issue");
                             return false;
                         }
                     }
                 }
                 
-                // Only try to disable auto-centering if we have exclusive access
                 if (exclusiveAccessGranted)
                 {
                     try
@@ -242,13 +386,34 @@ public class DirectInputManager : IDisposable
             }
             else
             {
-                // For non-force feedback devices, non-exclusive is fine
-                _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
-                Console.WriteLine("Non-exclusive access set for input-only device");
+                try
+                {
+                    _wheel.SetCooperativeLevel(consoleWindow, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+                    Console.WriteLine("Non-exclusive access set for input-only device");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to set cooperative level: {ex.Message}");
+                    Console.WriteLine("This usually indicates a driver issue");
+                    return false;
+                }
             }
             
-            _wheel.Acquire();
-            Console.WriteLine("Wheel device acquired successfully");
+            try
+            {
+                _wheel.Acquire();
+                Console.WriteLine("Wheel device acquired successfully");
+                
+                // Test reading the device state
+                var testState = _wheel.GetCurrentState();
+                Console.WriteLine($"Initial state test - X: {testState.X}, Buttons: {testState.Buttons.Count(b => b)}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to acquire device: {ex.Message}");
+                Console.WriteLine("This may indicate the device is in use by another application");
+                return false;
+            }
             
             if (hasForceFeedback && exclusiveAccessGranted)
             {
@@ -273,6 +438,11 @@ public class DirectInputManager : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to connect to wheel: {ex.Message}");
+            Console.WriteLine("Common causes:");
+            Console.WriteLine("  - Device drivers not installed or outdated");
+            Console.WriteLine("  - Device in use by another application");
+            Console.WriteLine("  - Insufficient permissions (try running as administrator)");
+            Console.WriteLine("  - Device not properly connected or powered on");
             CleanupWheelResources();
             return false;
         }
@@ -409,8 +579,23 @@ public class DirectInputManager : IDisposable
             _wheel.Poll();
             return _wheel.GetCurrentState();
         }
-        catch
+        catch (Exception ex)
         {
+            // Device might have been disconnected or lost
+            if (ex.Message.Contains("DIERR_INPUTLOST") || ex.Message.Contains("DIERR_NOTACQUIRED"))
+            {
+                try
+                {
+                    _wheel.Acquire();
+                    _wheel.Poll();
+                    return _wheel.GetCurrentState();
+                }
+                catch
+                {
+                    // Still failing, device likely disconnected
+                    return null;
+                }
+            }
             return null;
         }
     }
@@ -424,8 +609,21 @@ public class DirectInputManager : IDisposable
             _pedals.Poll();
             return _pedals.GetCurrentState();
         }
-        catch
+        catch (Exception ex)
         {
+            if (ex.Message.Contains("DIERR_INPUTLOST") || ex.Message.Contains("DIERR_NOTACQUIRED"))
+            {
+                try
+                {
+                    _pedals.Acquire();
+                    _pedals.Poll();
+                    return _pedals.GetCurrentState();
+                }
+                catch
+                {
+                    return null;
+                }
+            }
             return null;
         }
     }
@@ -439,8 +637,21 @@ public class DirectInputManager : IDisposable
             _shifter.Poll();
             return _shifter.GetCurrentState();
         }
-        catch
+        catch (Exception ex)
         {
+            if (ex.Message.Contains("DIERR_INPUTLOST") || ex.Message.Contains("DIERR_NOTACQUIRED"))
+            {
+                try
+                {
+                    _shifter.Acquire();
+                    _shifter.Poll();
+                    return _shifter.GetCurrentState();
+                }
+                catch
+                {
+                    return null;
+                }
+            }
             return null;
         }
     }

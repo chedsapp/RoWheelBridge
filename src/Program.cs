@@ -32,11 +32,23 @@ class Program
         Console.WriteLine("=== RoWheel Bridge ===");
         Console.WriteLine("DirectInput Steering Wheel to Xbox Controller Bridge");
         Console.WriteLine();
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  RoWheelBridge.exe           - Normal operation");
+        Console.WriteLine("  RoWheelBridge.exe --debug   - Enable debug output");
+        Console.WriteLine("  RoWheelBridge.exe --list-devices - List all devices and exit");
+        Console.WriteLine();
         
         // Check for debug flag
         _debugMode = args.Contains("--debug") || args.Contains("-d");
         if (_debugMode)
             Console.WriteLine("Debug mode enabled\n");
+        
+        // Check for device list flag
+        if (args.Contains("--list-devices") || args.Contains("-l"))
+        {
+            ListAllDevicesAsync();
+            return;
+        }
         
         try
         {
@@ -90,6 +102,8 @@ class Program
             
             if (!allDevices.Any())
             {
+                Console.WriteLine("ERROR: No input devices found!");
+                ShowTroubleshootingInfo();
                 throw new Exception("No input devices found!");
             }
             
@@ -105,7 +119,7 @@ class Program
             
             // Select steering wheel device
             Console.WriteLine("\n--- STEERING WHEEL SELECTION ---");
-            Console.Write($"Select device for STEERING (1-{allDevices.Count}): ");
+            Console.Write($"Select device for STEERING WHEEL (1-{allDevices.Count}): ");
             var steeringDevice = SelectDevice(allDevices);
             
             if (!_inputManager.ConnectToWheel(steeringDevice.InstanceGuid))
@@ -175,6 +189,8 @@ class Program
         
         return Task.CompletedTask;
     }
+    
+
     
     static DeviceInstance SelectDevice(List<DeviceInstance> devices)
     {
@@ -496,12 +512,47 @@ class Program
             info.Add($"{capabilities.AxeCount} axes");
             info.Add($"{capabilities.ButtonCount} buttons");
             
+            // Add device type info
+            string typeInfo = device.Type.ToString();
+            if (device.Type == DeviceType.Driving)
+                typeInfo += " [WHEEL]";
+            else if (device.Type == DeviceType.Joystick)
+                typeInfo += " [JOYSTICK]";
+            
+            info.Add(typeInfo);
+            
             return $"({string.Join(", ", info)})";
         }
-        catch
+        catch (Exception ex)
         {
-            return "(info unavailable)";
+            return $"(error: {ex.Message})";
         }
+    }
+    
+    static void ShowTroubleshootingInfo()
+    {
+        Console.WriteLine("\n=== TROUBLESHOOTING INFORMATION ===");
+        Console.WriteLine("If you're having issues finding your wheel device:");
+        Console.WriteLine();
+        Console.WriteLine("1. Make sure your wheel is:");
+        Console.WriteLine("   - Properly connected via USB");
+        Console.WriteLine("   - Powered on (if it has a power switch)");
+        Console.WriteLine("   - Recognized by Windows (check Device Manager)");
+        Console.WriteLine();
+        Console.WriteLine("2. Try running this program as Administrator");
+        Console.WriteLine("   - Right-click the executable and select 'Run as administrator'");
+        Console.WriteLine("   - This is often required for force feedback to work");
+        Console.WriteLine();
+        Console.WriteLine("3. Check Windows Device Manager:");
+        Console.WriteLine("   - Look under 'Human Interface Devices' or 'Sound, video and game controllers'");
+        Console.WriteLine("   - Your wheel should appear without warning icons");
+        Console.WriteLine();
+        Console.WriteLine("4. If using debug mode (--debug flag):");
+        Console.WriteLine("   - Look for detailed device information");
+        Console.WriteLine("   - Check if multiple instances of the same device are found");
+        Console.WriteLine();
+        Console.WriteLine("Press ENTER to continue...");
+        Console.ReadLine();
     }    
 
     static async Task RunMainLoopAsync()
@@ -665,6 +716,207 @@ class Program
                 return true; // Indicate we handled the event
         }
         return false;
+    }
+    
+    static void ListAllDevicesAsync()
+    {
+        Console.WriteLine("=== DEVICE DISCOVERY TOOL ===");
+        Console.WriteLine("This tool lists all available input devices for troubleshooting.\n");
+        
+        try
+        {
+            _inputManager = new DirectInputManager();
+            
+            Console.WriteLine("Enumerating devices with detailed debugging...");
+            var allDevices = _inputManager.GetAllInputDevices(true);
+            
+            if (!allDevices.Any())
+            {
+                Console.WriteLine("\nERROR: No input devices found!");
+                Console.WriteLine("This could indicate:");
+                Console.WriteLine("  - No compatible devices are connected");
+                Console.WriteLine("  - DirectInput drivers are not working properly");
+                Console.WriteLine("  - Windows needs to be restarted after driver installation");
+                Console.WriteLine("  - The application needs to be run as administrator");
+                ShowTroubleshootingInfo();
+                return;
+            }
+            
+            Console.WriteLine("\n=== DETAILED DEVICE INFORMATION ===");
+            
+            for (int i = 0; i < allDevices.Count; i++)
+            {
+                var device = allDevices[i];
+                Console.WriteLine($"\n--- Device {i + 1}: {device.ProductName} ---");
+                Console.WriteLine($"  Instance GUID: {device.InstanceGuid}");
+                Console.WriteLine($"  Product GUID: {device.ProductGuid}");
+                Console.WriteLine($"  Device Type: {device.Type}");
+                Console.WriteLine($"  Usage: {device.Usage} (Page: {device.UsagePage})");
+                
+                try
+                {
+                    using var tempJoystick = new Joystick(_inputManager.DirectInputInstance, device.InstanceGuid);
+                    var capabilities = tempJoystick.Capabilities;
+                    
+                    Console.WriteLine($"  Capabilities:");
+                    Console.WriteLine($"    Axes: {capabilities.AxeCount}");
+                    Console.WriteLine($"    Buttons: {capabilities.ButtonCount}");
+                    Console.WriteLine($"    POV Hats: {capabilities.PovCount}");
+                    Console.WriteLine($"    Force Feedback: {(capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback) ? "Yes" : "No")}");
+                    Console.WriteLine($"    Driver Version: {capabilities.DriverVersion}");
+                    Console.WriteLine($"    Firmware Revision: {capabilities.FirmwareRevision}");
+                    Console.WriteLine($"    Hardware Revision: {capabilities.HardwareRevision}");
+                    
+                    // Test basic connection
+                    try
+                    {
+                        tempJoystick.SetCooperativeLevel(IntPtr.Zero, CooperativeLevel.NonExclusive | CooperativeLevel.Background);
+                        tempJoystick.Acquire();
+                        var state = tempJoystick.GetCurrentState();
+                        Console.WriteLine($"  Connection Test: SUCCESS");
+                        Console.WriteLine($"    Current State - X: {state.X}, Y: {state.Y}, Z: {state.Z}");
+                        Console.WriteLine($"    Active Buttons: {state.Buttons.Count(b => b)}");
+                        
+                        // Test if we can read multiple states (device responsiveness)
+                        Thread.Sleep(50);
+                        tempJoystick.Poll();
+                        var state2 = tempJoystick.GetCurrentState();
+                        bool responsive = state.X != state2.X || state.Y != state2.Y || 
+                                        state.Buttons.Zip(state2.Buttons, (a, b) => a != b).Any(changed => changed);
+                        Console.WriteLine($"    Device Responsiveness: {(responsive ? "ACTIVE (values changing)" : "STABLE (no movement detected)")}");
+                        
+                        tempJoystick.Unacquire();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  Connection Test: FAILED");
+                        Console.WriteLine($"    Error: {ex.Message}");
+                        Console.WriteLine($"    This device may not be usable");
+                    }
+                    
+                    // Test force feedback capability if available
+                    if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback))
+                    {
+                        try
+                        {
+                            tempJoystick.SetCooperativeLevel(IntPtr.Zero, CooperativeLevel.Exclusive | CooperativeLevel.Background);
+                            tempJoystick.Acquire();
+                            Console.WriteLine($"  Force Feedback Test: Can acquire exclusive access");
+                            tempJoystick.Unacquire();
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"  Force Feedback Test: Cannot get exclusive access (may need admin rights)");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ERROR: Cannot examine device capabilities");
+                    Console.WriteLine($"    {ex.Message}");
+                    Console.WriteLine($"    This device is likely not compatible or has driver issues");
+                }
+            }
+            
+            // Show device suitability analysis
+            Console.WriteLine("\n=== DEVICE SUITABILITY ANALYSIS ===");
+            
+            var suitableDevices = allDevices.Where(d => 
+            {
+                try
+                {
+                    using var tempJoystick = new Joystick(_inputManager.DirectInputInstance, d.InstanceGuid);
+                    var capabilities = tempJoystick.Capabilities;
+                    return capabilities.AxeCount >= 1 && (capabilities.ButtonCount > 0 || capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback));
+                }
+                catch
+                {
+                    return false;
+                }
+            }).ToList();
+            
+            if (suitableDevices.Any())
+            {
+                Console.WriteLine($"Found {suitableDevices.Count} device(s) that appear suitable for wheel/controller use:");
+                foreach (var device in suitableDevices.OrderByDescending(d => 
+                {
+                    try
+                    {
+                        using var tempJoystick = new Joystick(_inputManager.DirectInputInstance, d.InstanceGuid);
+                        var capabilities = tempJoystick.Capabilities;
+                        int score = 0;
+                        if (capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback)) score += 100;
+                        if (d.Type == DeviceType.Driving) score += 50;
+                        score += capabilities.AxeCount * 10 + capabilities.ButtonCount * 2;
+                        return score;
+                    }
+                    catch { return 0; }
+                }))
+                {
+                    var deviceInfo = GetDeviceInfo(device);
+                    Console.WriteLine($"  ✓ {device.ProductName} {deviceInfo}");
+                }
+                Console.WriteLine("\nAny of these devices can be selected manually during setup.");
+            }
+            else
+            {
+                Console.WriteLine("No devices appear suitable for wheel/controller use.");
+                Console.WriteLine("This could indicate driver issues or incompatible hardware.");
+            }
+            
+            Console.WriteLine("\n=== RECOMMENDATIONS ===");
+            
+            var hasHidDevices = allDevices.Any(d => d.ProductName.ToLowerInvariant().Contains("hid"));
+            var hasJoystickDevices = allDevices.Any(d => d.Type == DeviceType.Joystick);
+            var hasForceFeeback = allDevices.Any(d => 
+            {
+                try
+                {
+                    using var tempJoystick = new Joystick(_inputManager.DirectInputInstance, d.InstanceGuid);
+                    return tempJoystick.Capabilities.Flags.HasFlag(DeviceFlags.ForceFeedback);
+                }
+                catch { return false; }
+            });
+            var hasConnectionIssues = allDevices.Any(d => GetDeviceInfo(d).Contains("Connection Failed"));
+            
+            if (hasHidDevices)
+            {
+                Console.WriteLine("• Some devices show as 'HID' - consider installing manufacturer-specific drivers for better functionality");
+            }
+            if (hasJoystickDevices)
+            {
+                Console.WriteLine("• Joystick-type devices found - these can work as wheels if they have multiple axes");
+            }
+            if (hasForceFeeback)
+            {
+                Console.WriteLine("• Force feedback devices detected - run as administrator to enable force feedback");
+            }
+            if (hasConnectionIssues)
+            {
+                Console.WriteLine("• Some devices have connection issues - try running as administrator or updating drivers");
+            }
+            if (allDevices.Count < 2)
+            {
+                Console.WriteLine("• Very few devices detected - check that your wheel is connected and powered on");
+            }
+            if (!suitableDevices.Any())
+            {
+                Console.WriteLine("• No suitable devices found - check device manager for driver issues or hardware problems");
+            }
+            
+            Console.WriteLine("\nPress any key to exit...");
+            Console.ReadKey();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"CRITICAL ERROR during device discovery: {ex.Message}");
+            Console.WriteLine("This indicates a serious DirectInput or system issue.");
+            Console.WriteLine("Try running as administrator or reinstalling DirectX.");
+        }
+        finally
+        {
+            _inputManager?.Dispose();
+        }
     }
     
     static void Cleanup()
