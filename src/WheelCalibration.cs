@@ -30,6 +30,7 @@ public class WheelCalibration
     // Button assignments
     public int ShiftUpButton { get; set; } = -1;
     public int ShiftDownButton { get; set; } = -1;
+    public int ErsButton { get; set; } = -1;
     
     public void SaveToFile(string filename)
     {
