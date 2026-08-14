@@ -425,6 +425,25 @@ class Program
             {
                 Console.WriteLine("No button press detected for Shift Down.");
             }
+            // ERS button
+            Console.WriteLine("\nPress and hold the ERS button.");
+            Console.WriteLine("Press ENTER when ready...");
+            Console.ReadLine();
+
+            var ersState = await WaitForStableInput(deviceGuid);
+            _calibration.ErsButton = FindPressedButton(ersState);
+
+            if (_calibration.ErsButton != -1)
+            {
+                Console.WriteLine($"ERS button detected: Button {_calibration.ErsButton}");
+            }
+            else
+            {
+                Console.WriteLine("No button press detected for ERS.");
+            }
+
+            Console.WriteLine("Release the button and wait...");
+            await Task.Delay(1000);
         }
         else
         {
@@ -432,6 +451,7 @@ class Program
             // Ensure buttons are disabled in calibration
             _calibration.ShiftUpButton = -1;
             _calibration.ShiftDownButton = -1;
+	        _calibration.ErsButton = -1;
         }
     }
     
@@ -642,6 +662,10 @@ class Program
             if (_calibration.ShiftDownButton >= 0 && _calibration.ShiftDownButton < shifterState.Buttons.Length)
             {
                 _controller.SetButtonState(Xbox360Button.X, shifterState.Buttons[_calibration.ShiftDownButton]);
+            }
+            if (_calibration.ErsButton >= 0 && _calibration.ErsButton < shifterState.Buttons.Length)
+            {       
+                _controller.SetButtonState(Xbox360Button.B, shifterState.Buttons[_calibration.ErsButton]);
             }
         }
         
